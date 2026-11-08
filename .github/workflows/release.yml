@@ -1,0 +1,106 @@
+# Builds the exe on GitHub, signs it through SignPath when that is set up,
+# and publishes the zip to a GitHub release.
+#
+# Push a tag like v0.1.1 (matching the version in Cargo.toml) to release.
+# "Run workflow" on the Actions tab builds the same zip as a test artifact.
+#
+# Signing turns on once the SIGNPATH_API_TOKEN secret exists; see docs/RELEASING.md.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1
+          $version = $match.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Upload unsigned exe
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: deadlock-launcher-lite-unsigned
+          path: target/release/deadlock-launcher-lite.exe
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Package zip
+        id: package
+        shell: pwsh
+        run: |
+          $exe = if (Test-Path signed/deadlock-launcher-lite.exe) {
+            'signed/deadlock-launcher-lite.exe'
+          } else {
+            'target/release/deadlock-launcher-lite.exe'
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $zip = "dist/DeadlockLauncherLite-${{ steps.version.outputs.version }}-windows-x64.zip"
+          Compress-Archive -Path $exe -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $(Split-Path $zip -Leaf)" | Out-File "$zip.sha256" -Encoding ascii -NoNewline
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "signed=$((Test-Path signed/deadlock-launcher-lite.exe).ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: DeadlockLauncherLite-${{ steps.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # "gh release view" fails for a new tag; that is a branch, not an error.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $tag = $env:GITHUB_REF_NAME
+          $files = Get-ChildItem dist | ForEach-Object { $_.FullName }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag @files --title "Deadlock Launcher Lite ${{ steps.version.outputs.version }}" --generate-notes
+          }
