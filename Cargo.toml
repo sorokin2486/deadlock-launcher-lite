@@ -1,0 +1,28 @@
+[package]
+name = "deadlock-launcher-lite"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Deadlock Launcher Lite: a lightweight Deadlock mod launcher with GameBanana support"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zip = { version = "9.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+sevenz-rust2 = { version = "0.25", default-features = false }
+unrar = "0.5.8"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+md-5 = "0.11"
+winreg = "0.56"
+
+[build-dependencies]
+winresource = "0.1.34"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
